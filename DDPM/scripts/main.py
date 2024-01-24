@@ -33,7 +33,7 @@ dataset_config=yaml_data['data']
 # 先不管dataset的东西吧
 test=DDPM(unet_config)
 trainer=pl.Trainer(devices=1,max_epochs=5,callbacks=[checkpoint_callback],limit_val_batches=10,accelerator='gpu')
-train_loader,val_loader=get_ldmcelebahq(batch_size=3)
+train_loader,val_loader=get_ldmcelebahq(batch_size=5)
 
 
 trainer.fit(test,train_dataloaders=train_loader,val_dataloaders=val_loader)

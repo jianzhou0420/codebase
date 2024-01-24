@@ -7,8 +7,8 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .fp16_util import convert_module_to_f16, convert_module_to_f32
-from .nn import (
+from core.module.unet.fp16_util import convert_module_to_f16, convert_module_to_f32
+from core.module.unet.nn import (
     SiLU,
     conv_nd,
     linear,
@@ -22,8 +22,6 @@ from .nn import (
 # 一个壳子，它是abstract method。意思是，只要继承了这个class，你的forward一定要implement，否则runtime error。
 # 这样定义，相当于标记了继承者是一个timestepblock, 且应该接受，x，emb两个输入。虽然在机制上不强制，但具有提示意义
 
-# 在python中，一个class 必须同时使用@abstractmethod和 继承与ABC，才能被标记为abstract class。才会runtime error if not implement。
-# 如果单独只是使用了一个@abstractmethod，那么仅仅是告诉读者，这个是abstactmethod，python 并不会报错
 class TimestepBlock(nn.Module):
     """
     Any module where forward() takes timestep embeddings as a second argument.
@@ -216,32 +214,22 @@ class AttentionBlock(nn.Module):
         self.use_checkpoint = use_checkpoint
 
         self.norm = normalization(channels)
-        self.qkv = conv_nd(1, channels, channels * 3, 1) # note: 这里是 conv1d！！！！！！！
-        # 意思是，通过conv分离出q,k,v？？？！！！ 这是怎么实现的？
-        # 我记得KQV是需要训练的参数啊，为什么这里的kqv是从x convolute出来的
-        # wait! conv_nd is not a nn.function.conv2d, but a nn.conv2d, which means it is a layer in this model.
-        # 怪不得！ 它只是用conv2d来创建一个kqv的矩阵罢了。conv2d(input_ch,output_ch,kernal_size) 这里的kernal size是1
+        self.qkv = conv_nd(1, channels, channels * 3, 1)
         self.attention = QKVAttention()
         self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
 
     def forward(self, x):
         return checkpoint(self._forward, (x,), self.parameters(), self.use_checkpoint)
 
-    def _forward(self, x): # [batch_size,ch,H,W]
+    def _forward(self, x):
         b, c, *spatial = x.shape
         x = x.reshape(b, c, -1)
-        norm=self.norm(x) #norm:[5,448,1024]
-        qkv = self.qkv(norm) #qkv=[batch_size,model_channels*multi*3,H*W=1024] 这个3来自self.qkv的定义
-        qkv = qkv.reshape(b * self.num_heads, -1, qkv.shape[2]) # 没区别，单纯加了个保险
-        h = self.attention(qkv) # [bach_size=5,channel=model_channels*2,1024],从qkv的【5，1344，1024】到【5，448，1024】为什么降低了channls
+        qkv = self.qkv(self.norm(x))
+        qkv = qkv.reshape(b * self.num_heads, -1, qkv.shape[2])
+        h = self.attention(qkv)
         h = h.reshape(b, -1, h.shape[-1])
         h = self.proj_out(h)
-        return (x + h).reshape(b, c, *spatial) #
-# The intuition behind attention is that rather than compressing the input, 
-# it might be better for the decoder to revisit the input sequence at every step.
-# https://d2l.ai/chapter_attention-mechanisms-and-transformers/index.html
-
-
+        return (x + h).reshape(b, c, *spatial)
 
 
 class QKVAttention(nn.Module):
@@ -263,7 +251,6 @@ class QKVAttention(nn.Module):
             "bct,bcs->bts", q * scale, k * scale
         )  # More stable with f16 than dividing afterwards
         weight = th.softmax(weight.float(), dim=-1).type(weight.dtype)
-        
         return th.einsum("bts,bcs->bct", weight, v)
 
     @staticmethod
@@ -313,7 +300,7 @@ class UNetModel(nn.Module):
     :param num_heads: the number of attention heads in each attention layer.
     """
 
-    def __init__( 
+    def __init__(
         self,
         in_channels,
         model_channels,
@@ -331,13 +318,12 @@ class UNetModel(nn.Module):
         use_scale_shift_norm=False,
     ):
         super().__init__()
-        #总共分为input_block,middle_block,output_block三个部分，分别对应我理解的Unet的 down, middle, up
 
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
 
         self.in_channels = in_channels
-        self.model_channels = model_channels #设置的224
+        self.model_channels = model_channels
         self.out_channels = out_channels
         self.num_res_blocks = num_res_blocks
         self.attention_resolutions = attention_resolutions
@@ -391,7 +377,13 @@ class UNetModel(nn.Module):
                             ch, use_checkpoint=use_checkpoint, num_heads=num_heads
                         )
                     )
+                
+                for module in self.input_blocks:
+                    print(module)
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
+                print('-----------')
+                for module in self.input_blocks:
+                    print(module)
                 input_block_chans.append(ch)
             if level != len(channel_mult) - 1:
                 self.input_blocks.append(
@@ -563,3 +555,19 @@ class SuperResModel(UNetModel):
         x = th.cat([x, upsampled], dim=1)
         return super().get_feature_vectors(x, timesteps, **kwargs)
 
+
+model= UNetModel(
+        in_channels=3,
+        model_channels=224,
+        out_channels=3,
+        num_res_blocks=2,
+        attention_resolutions=(8,4,2),
+        dropout=0,
+        channel_mult=(1, 2, 3, 4),
+        conv_resample=True,
+        dims=2,
+        num_classes=None,
+        use_checkpoint=False,
+        num_heads=1,
+        num_heads_upsample=-1,
+        use_scale_shift_norm=False,)

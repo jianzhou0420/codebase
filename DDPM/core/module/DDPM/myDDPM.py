@@ -1,11 +1,26 @@
 # for functions that only use once, I encapsulate them in nested function.
 # 有时候你会发现我很多重复的操作，它们是为了增加可读性而添加的。且几乎不会增加计算量，计算时间。
+
 import torch.nn as nn
 import torch
 import numpy as np
 from functools import partial
 
 import pytorch_lightning as pl
+from core.module.unet.unet import UNetModel
+# from core.module.unet.openaimodel import UNetModel # 也会溢出
+from tqdm import tqdm
+
+
+
+
+# test memory profiler
+import torch
+from torch.profiler import profile, record_function, ProfilerActivity
+# /test
+device='cuda'
+
+
 
 
 
@@ -55,18 +70,39 @@ def get_beta_schedule(beta_schedule, *, beta_start=0.01, beta_end=10, num_diffus
 
 
 class DDPM(pl.LightningModule):
-    def __init__(self,unet_config):
+    def __init__(self):
+        super().__init__()
         
         
         # 1. define some meta variables 
         self.num_timesteps=1000
         
         
-        
-        
         # 2.register some coefficients that need to be saved as part of the model, which hence will be used when inferecing.
         self.register_coefficients()
-        pass
+        
+        # 3.define model
+        self.model= UNetModel(
+        # image_size=64,
+        in_channels=3,
+        model_channels=224,
+        out_channels=3,
+        num_res_blocks=2,
+        attention_resolutions=(8,4,2),
+        dropout=0,
+        channel_mult=(1, 2, 3, 4),
+        conv_resample=True,
+        dims=2,
+        num_classes=None,
+        use_checkpoint=False,
+        num_heads=1,
+        num_heads_upsample=-1,
+        use_scale_shift_norm=False,)
+
+        # 4. 暂存
+    def configure_optimizers(self):
+        optimizer=torch.optim.Adam(self.parameters(),lr=1e-3)
+        return optimizer
     
     
     def register_coefficients(self):
@@ -75,22 +111,55 @@ class DDPM(pl.LightningModule):
         to_torch=partial(torch.tensor,dtype=torch.float32)
         
         # meata variable
-        betas=get_beta_schedule('cosine') # assume it is ndarray
+        betas=get_beta_schedule('cosine',num_diffusion_timesteps=self.num_timesteps) # assume it is ndarray
         alphas=1.-betas
-        alphas_bar=np.cumprod(alphas,axis=0)
-        # alphas_bar_prev=np.append(1.,alphas_bar[:-1]) # 这个是t-1时刻的alphas_bar, 可便于计算，但不便于理解，可以忽略
         
-        
-        # register meta variable
-        self.register_buffer('betas', to_torch(betas))
-        self.register_buffer('alpha_bar', to_torch(alphas_bar))
-        self.register_buffer('sqrt_alpha_bar', to_torch(np.sqrt(alphas_bar)))
-        self.register_buffer('sqrt_one_minus_alpha_bar', to_torch(np.sqrt(1.-alphas_bar)))
+        alphas = 1.0 - betas
+        self.alphas_cumprod = np.cumprod(alphas, axis=0)
+        self.alphas_cumprod_prev = np.append(1.0, self.alphas_cumprod[:-1])
+        self.alphas_cumprod_next = np.append(self.alphas_cumprod[1:], 0.0)
+        assert self.alphas_cumprod_prev.shape == (self.num_timesteps,)
 
-        
+        # calculations for diffusion q(x_t | x_{t-1}) and others
+        self.sqrt_alphas_cumprod = np.sqrt(self.alphas_cumprod)
+        self.sqrt_one_minus_alphas_cumprod = np.sqrt(1.0 - self.alphas_cumprod)
+        self.log_one_minus_alphas_cumprod = np.log(1.0 - self.alphas_cumprod)
+        self.sqrt_recip_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod)
+        self.sqrt_recipm1_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod - 1)
 
+        # calculations for posterior q(x_{t-1} | x_t, x_0)
+        self.posterior_variance = (
+            betas * (1.0 - self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
+        )
+        # log calculation clipped because the posterior variance is 0 at the
+        # beginning of the diffusion chain.
+        self.posterior_log_variance_clipped = np.log(
+            np.append(self.posterior_variance[1], self.posterior_variance[1:])
+        )
+        self.posterior_mean_coef1 = (
+            betas * np.sqrt(self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
+        )
+        self.posterior_mean_coef2 = (
+            (1.0 - self.alphas_cumprod_prev)
+            * np.sqrt(alphas)
+            / (1.0 - self.alphas_cumprod)
+        )
         
-        pass
+        # to_torch
+        
+        self.alphas_cumprod=to_torch(self.alphas_cumprod).to(device)
+        self.alphas_cumprod_prev=to_torch(self.alphas_cumprod_prev).to(device)
+        self.alphas_cumprod_next=to_torch(self.alphas_cumprod_next).to(device)
+        self.sqrt_alphas_cumprod=to_torch(self.sqrt_alphas_cumprod).to(device)
+        self.sqrt_one_minus_alphas_cumprod=to_torch(self.sqrt_one_minus_alphas_cumprod).to(device)
+        self.log_one_minus_alphas_cumprod=to_torch(self.log_one_minus_alphas_cumprod).to(device)
+        self.sqrt_recip_alphas_cumprod=to_torch(self.sqrt_recip_alphas_cumprod).to(device)
+        self.sqrt_recipm1_alphas_cumprod=to_torch(self.sqrt_recipm1_alphas_cumprod).to(device)
+        self.posterior_variance=to_torch(self.posterior_variance).to(device)
+        self.posterior_log_variance_clipped=to_torch(self.posterior_log_variance_clipped).to(device)
+        self.posterior_mean_coef1=to_torch(self.posterior_mean_coef1).to(device)
+
+    
     def register_schedule(self):
         pass
     
@@ -98,17 +167,19 @@ class DDPM(pl.LightningModule):
     def training_step(self,batch,batch_idx):
         # pre-process, to make x_0 be [batch_size, width, height, chanel]
         
-        # TODO: make it more general
+        # 
         x0=batch['image'].permute(0,3,1,2)
         # batch : [batch_size,width,height,chanel]
-        
-        x0=x0
         t= torch.randint(0,self.num_timesteps,(x0.shape[0],),device=self.device)
         noise=torch.randn_like(x0)
         batch_size=x0.shape[0]
         
+        # 逻辑是，
+        # 先用原图x_0,通过不同的t，得到经过t次加噪音noise之后的x_t
+        # 然后，model，告诉model，x_t和t，让它推理噪音是什么样子。
+        # 因此，model的输出是，噪音
         x_t=(# equation:√(a_hat) * x_0 + √(1-a_hat) * N(0,I)
-            self.sqrt_alphas_bar[t].view(batch_size,1,1,1) * x0+ 
+            self.sqrt_alphas_cumprod[t].view(batch_size,1,1,1) * x0+ 
             self.sqrt_one_minus_alphas_cumprod[t].view(batch_size,1,1,1)*noise 
             )
         
@@ -117,25 +188,47 @@ class DDPM(pl.LightningModule):
         target=noise
         
         # get loss
-        loss_dict={}
         loss=torch.nn.functional.mse_loss(target,model_output)
-        
+        print(model_output.max(),model_output.min())
+        # log
+        self.log('loss',loss,prog_bar=True,logger=True,on_epoch=False)
         return loss
-        
+    
+    
+    @torch.no_grad()
     def sampling_step(self):
-        x_t=torch.randn(3,256,256,device=self.device) # random a noisy image x_t
+        self.model.eval()
+        x_t=torch.randn(1,3,64,64,device=device) # random a noisy image x_t # TODO: 1，64，都可以变成参数
         
-        for t in reversed(range(1,self.num_timesteps)): # prograsively denoise
-            z=torch.randn(3,256,256,device=self.device)
-           
-            noise=self.model(x_t,t)
-
-            x_0_predicted=self.math_helper.predict_x_0(self.sqrt_recip_alphas_cumprod[t],x_t,noise)
+        for t in tqdm(reversed(range(1,self.num_timesteps))): # prograsively denoise
             
-            x_tm1=(self.posterior_mean_coef1[t] *x_0_predicted*self.posterior_mean_coef2[t]*x_t)+self.posterior_variance[t]*z
+            t=torch.tensor(t,device=device).reshape(1)
+            z=torch.randn(3,64,64,device=device)
+
+            if t==1000-24:
+                print(1)
+                pass
+
+
+            noise=self.model(x_t,t)
+            
+            if t==1000-24:
+                print(1)
+                pass
+            
+            x_0_predicted=(x_t-self.sqrt_one_minus_alphas_cumprod[t]*noise)/self.sqrt_alphas_cumprod[t]
+            
+            x_tm1=(self.posterior_mean_coef1 *x_0_predicted+self.posterior_mean_coef2*x_t)+self.posterior_variance*z
             
             x_t=x_tm1
-        img=x_tm1
+
+        img=x_t # at present, x_t is the x_0_predicted
+        
+        #test
+        # t=torch.tensor(1,device='cuda').reshape(1)
+        # noise=self.model(x_t,t)
+        # img=noise
+        #/test
         
         return img
         

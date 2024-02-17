@@ -5,23 +5,23 @@ import numpy as np
 from torch.utils.data import DataLoader
 
 def get_celebahq(root):
-    loader_train=DataLoader(CelebAHQTrain(root),batch_size=3)
-    loader_validation=DataLoader(CelebAHQValidation(root),batch_size=3)
+    loader_train=DataLoader(CelebAHQTrain(root),batch_size=1)
+    loader_validation=DataLoader(CelebAHQValidation(root),batch_size=1)
     return loader_train,loader_validation
 
 
 class CelebAHQTrain(Dataset):
-    def __init__(self, root):
+    def __init__(self, dataroot,listroot):
         super().__init__()
-        self.img_path = root 
+        self.img_path = dataroot 
         # 默认含有
         # celebahq: folder
         # celebahqtrain.txt
         # celebahqvalidation.txt
         
         # read train list
-        listpath=os.path.join(root,'celebahqtrain.txt')
-        datapath=os.path.join(root,'celebahq')
+        listpath=os.path.join(listroot,'celebahqtrain.txt')
+        datapath=dataroot
         
         with open(listpath, "r") as f:
             paths = f.read().splitlines()
@@ -40,17 +40,17 @@ class CelebAHQTrain(Dataset):
         
         
 class CelebAHQValidation(Dataset):
-    def __init__(self, root):
+    def __init__(self, dataroot,listroot):
         super().__init__()
-        self.img_path = root 
+        self.img_path = dataroot 
         # 默认含有
         # celebahq: folder
         # celebahqtrain.txt
         # celebahqvalidation.txt
         
         # read train list
-        listpath=os.path.join(root,'celebahqvalidation.txt')
-        datapath=os.path.join(root,'celebahq')
+        listpath=os.path.join(listroot,'celebahqvalidation.txt')
+        datapath=dataroot
         
         with open(listpath, "r") as f:
             paths = f.read().splitlines()
@@ -76,10 +76,11 @@ class CelebAHQValidation(Dataset):
 #     break
 
 
-def get_ldmcelebahq(batch_size=5):
-    trainloader=DataLoader(CelebAHQTrain(64),batch_size=batch_size)
-    valloader=DataLoader(CelebAHQValidation(64),batch_size=batch_size)
+def get_ldmcelebahq(dataroot,listroot,batch_size=5):
+    trainloader=DataLoader(CelebAHQTrain(dataroot,listroot,64),batch_size=batch_size)
+    valloader=DataLoader(CelebAHQValidation(dataroot,listroot,64),batch_size=batch_size)
     return trainloader,valloader
+
 
 import os
 import numpy as np
@@ -108,10 +109,10 @@ class FacesBase(Dataset):
 
 
 class CelebAHQTrain(FacesBase):
-    def __init__(self, size, keys=None):
+    def __init__(self,dataroot,listroot, size, keys=None):
         super().__init__()
-        root = "/home/jian/git_all/latent-diffusion/data/celebahq"
-        with open("/home/jian/git_all/latent-diffusion/data/celebahqtrain.txt", "r") as f:
+        root = dataroot
+        with open(os.path.join(listroot,"celebahqtrain.txt"),"r") as f:
             relpaths = f.read().splitlines()
         paths = [os.path.join(root, relpath) for relpath in relpaths]
         self.data = NumpyPaths(paths=paths, size=size, random_crop=False)
@@ -119,10 +120,10 @@ class CelebAHQTrain(FacesBase):
 
 
 class CelebAHQValidation(FacesBase):
-    def __init__(self, size, keys=None):
+    def __init__(self,dataroot,listroot, size, keys=None):
         super().__init__()
-        root = "/home/jian/git_all/latent-diffusion/data/celebahq"
-        with open("/home/jian/git_all/latent-diffusion/data/celebahqvalidation.txt", "r") as f:
+        root = dataroot
+        with open(os.path.join(listroot,"celebahqvalidation.txt"), "r") as f:
             relpaths = f.read().splitlines()
         paths = [os.path.join(root, relpath) for relpath in relpaths]
         self.data = NumpyPaths(paths=paths, size=size, random_crop=False)

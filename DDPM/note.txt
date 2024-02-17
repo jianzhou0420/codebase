@@ -1,0 +1,32 @@
+记录一些发现或者技巧
+
+发现1：
+In root folder of a reposity, there are many subfolders like core, docs, assets, scripts.
+If you want access the code in 'core' folder, you usually can simply write a setup.py to make your code a python module for import's convenience.
+
+But sometimes, the interpreter in the terminal will say it cannot find 'core'. How? This is because you were not correctly setup your reposity.
+Here is the logic that the pip install . do.
+
+When it starts to install, it will check each subfolder whether it has a '__init__.py'. If it has, the subfolder will be treated as a module and will be installed
+So, folders like docs and assets will not be installed.
+
+In subfolder, you need to create __init__.py for each sub-subfolders so that you can treat them as just namespace.
+原来，子package，也需要————init————.py
+
+以上的理解不太对。
+
+重来；
+
+problem statement:
+测试代码时，路经问题很麻烦。请找到一个通用的路径管理的方法。
+
+
+
+可恶，原来跟__init__.py一点关系都没有，就单纯的"pip install -e ." editable 模式。浪费我很多时间
+
+import sys
+print(sys.path)可以看运行的时候，python的path
+
+
+---
+Use as less code, tricky logic and techniques as possible when implementing, for example donot use register buffer. They will consume your poor brain power

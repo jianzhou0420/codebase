@@ -505,9 +505,14 @@ class UNetModel(nn.Module):
         for module in self.output_blocks:
             cat_in = th.cat([h, hs.pop()], dim=1)
             h = module(cat_in, emb)
-        h = h.type(x.dtype)
-        return self.out(h)
 
+        h = h.type(x.dtype)
+        
+        # test
+        out=self.out(h)
+
+        #/ test
+        return out
     def get_feature_vectors(self, x, timesteps, y=None):
         """
         Apply the model and return all of the intermediate tensors.

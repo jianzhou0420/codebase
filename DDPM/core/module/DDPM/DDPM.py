@@ -12,7 +12,7 @@ import torchvision.transforms as transforms
 import numpy as np
 from functools import partial
 
-from ..unet.unet import UNetModel
+from core.module.unet.unet import UNetModel
 
 
 
@@ -30,7 +30,7 @@ class math_helper:
 
 
 class DDPM(pl.LightningModule):
-    def __init__(self,config):
+    def __init__(self):
         super().__init__()
         
         

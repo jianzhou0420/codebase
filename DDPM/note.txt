@@ -30,3 +30,6 @@ print(sys.path)可以看运行的时候，python的path
 
 ---
 Use as less code, tricky logic and techniques as possible when implementing, for example donot use register buffer. They will consume your poor brain power
+
+---
+md,我要说什么来着？

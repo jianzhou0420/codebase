@@ -10,62 +10,48 @@ import pytorch_lightning as pl
 from core.module.unet.unet import UNetModel
 # from core.module.unet.openaimodel import UNetModel # 也会溢出
 from tqdm import tqdm
+import math
 
 
 
-
-# test memory profiler
-import torch
-from torch.profiler import profile, record_function, ProfilerActivity
-# /test
 device='cuda'
 
 
+def linear_beta_schedule(timesteps):
+    """
+    linear schedule, proposed in original ddpm paper
+    """
+    scale = 1000 / timesteps
+    beta_start = scale * 0.0001
+    beta_end = scale * 0.02
+    return torch.linspace(beta_start, beta_end, timesteps, dtype = torch.float64)
 
+def cosine_beta_schedule(timesteps, s = 0.008):
+    """
+    cosine schedule
+    as proposed in https://openreview.net/forum?id=-NEXDKk8gZ
+    """
+    steps = timesteps + 1
+    t = torch.linspace(0, timesteps, steps, dtype = torch.float64) / timesteps
+    alphas_cumprod = torch.cos((t + s) / (1 + s) * math.pi * 0.5) ** 2
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 0, 0.999)
 
-
-def get_beta_schedule(beta_schedule, *, beta_start=0.01, beta_end=10, num_diffusion_timesteps=1000):# 没找到stat和end的默认值
-    
-    def _warmup_beta(beta_start, beta_end, num_diffusion_timesteps, warmup_frac):
-        betas = beta_end * np.ones(num_diffusion_timesteps, dtype=np.float64)
-        warmup_time = int(num_diffusion_timesteps * warmup_frac)
-        betas[:warmup_time] = np.linspace(beta_start, beta_end, warmup_time, dtype=np.float64)
-        return betas
-
-    def cosine_beta_schedule(timesteps, s = 0.008): # this come from Improved-ddpm
-        """
-        cosine schedule
-        as proposed in https://openreview.net/forum?id=-NEXDKk8gZ
-        """
-        steps = timesteps + 1
-        x = np.linspace(0, steps, steps)
-        alphas_cumprod = np.cos(((x / steps) + s) / (1 + s) * np.pi * 0.5) ** 2
-        alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
-        betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
-        return np.clip(betas, a_min = 0, a_max = 0.999)
-
-
-    if beta_schedule == 'quad':
-        betas = np.linspace(beta_start ** 0.5, beta_end ** 0.5, num_diffusion_timesteps, dtype=np.float64) ** 2
-    elif beta_schedule == 'linear':
-        betas = np.linspace(beta_start, beta_end, num_diffusion_timesteps, dtype=np.float64)
-    elif beta_schedule == 'warmup10':
-        betas = _warmup_beta(beta_start, beta_end, num_diffusion_timesteps, 0.1)
-    elif beta_schedule == 'warmup50':
-        betas = _warmup_beta(beta_start, beta_end, num_diffusion_timesteps, 0.5)
-    elif beta_schedule == 'const':
-        betas = beta_end * np.ones(num_diffusion_timesteps, dtype=np.float64)
-    elif beta_schedule == 'jsd':  # 1/T, 1/(T-1), 1/(T-2), ..., 1
-        betas = 1. / np.linspace(num_diffusion_timesteps, 1, num_diffusion_timesteps, dtype=np.float64)
-    elif beta_schedule=='cosine':
-        betas=cosine_beta_schedule(num_diffusion_timesteps)
-    else:
-        raise NotImplementedError(beta_schedule)
-    assert betas.shape == (num_diffusion_timesteps,)
-    
-
-        
-    return betas
+def sigmoid_beta_schedule(timesteps, start = -3, end = 3, tau = 1, clamp_min = 1e-5):
+    """
+    sigmoid schedule
+    proposed in https://arxiv.org/abs/2212.11972 - Figure 8
+    better for images > 64x64, when used during training
+    """
+    steps = timesteps + 1
+    t = torch.linspace(0, timesteps, steps, dtype = torch.float64) / timesteps
+    v_start = torch.tensor(start / tau).sigmoid()
+    v_end = torch.tensor(end / tau).sigmoid()
+    alphas_cumprod = (-((t * (end - start) + start) / tau).sigmoid() + v_end) / (v_end - v_start)
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 0, 0.999)
 
 
 
@@ -101,23 +87,24 @@ class DDPM(pl.LightningModule):
 
         # 4. 暂存
     def configure_optimizers(self):
-        optimizer=torch.optim.Adam(self.parameters(),lr=1e-3)
+        optimizer=torch.optim.Adam(self.parameters(),lr=2e-6)
         return optimizer
     
     
     def register_coefficients(self):
         
         # tools
-        to_torch=partial(torch.tensor,dtype=torch.float32)
+        to_torch=partial(torch.tensor,dtype=torch.float32,device=torch.device('cuda'))
         
         # meata variable
-        betas=get_beta_schedule('cosine',num_diffusion_timesteps=self.num_timesteps) # assume it is ndarray
+        betas=cosine_beta_schedule(self.num_timesteps).detach().numpy().astype(np.float32) # assume it is ndarray
+        
         alphas=1.-betas
         
-        alphas = 1.0 - betas
+        alphas = 1. - betas
         self.alphas_cumprod = np.cumprod(alphas, axis=0)
         self.alphas_cumprod_prev = np.append(1.0, self.alphas_cumprod[:-1])
-        self.alphas_cumprod_next = np.append(self.alphas_cumprod[1:], 0.0)
+        # self.alphas_cumprod_next = np.append(self.alphas_cumprod[1:], 0.0)
         assert self.alphas_cumprod_prev.shape == (self.num_timesteps,)
 
         # calculations for diffusion q(x_t | x_{t-1}) and others
@@ -145,19 +132,17 @@ class DDPM(pl.LightningModule):
             / (1.0 - self.alphas_cumprod)
         )
         
-        # to_torch
+
+        self.sqrt_alphas_cumprod=to_torch(self.sqrt_alphas_cumprod)
+        self.sqrt_one_minus_alphas_cumprod=to_torch(self.sqrt_one_minus_alphas_cumprod)
+        self.log_one_minus_alphas_cumprod=to_torch(self.log_one_minus_alphas_cumprod)
+        self.sqrt_recip_alphas_cumprod=to_torch(self.sqrt_recip_alphas_cumprod)
+        self.sqrt_recipm1_alphas_cumprod=to_torch(self.sqrt_recipm1_alphas_cumprod)
+        self.posterior_variance=to_torch(self.posterior_variance)
+        self.posterior_log_variance_clipped=to_torch(self.posterior_log_variance_clipped)
+        self.posterior_mean_coef1=to_torch(self.posterior_mean_coef1)
+        self.posterior_mean_coef2=to_torch(self.posterior_mean_coef2)
         
-        self.alphas_cumprod=to_torch(self.alphas_cumprod).to(device)
-        self.alphas_cumprod_prev=to_torch(self.alphas_cumprod_prev).to(device)
-        self.alphas_cumprod_next=to_torch(self.alphas_cumprod_next).to(device)
-        self.sqrt_alphas_cumprod=to_torch(self.sqrt_alphas_cumprod).to(device)
-        self.sqrt_one_minus_alphas_cumprod=to_torch(self.sqrt_one_minus_alphas_cumprod).to(device)
-        self.log_one_minus_alphas_cumprod=to_torch(self.log_one_minus_alphas_cumprod).to(device)
-        self.sqrt_recip_alphas_cumprod=to_torch(self.sqrt_recip_alphas_cumprod).to(device)
-        self.sqrt_recipm1_alphas_cumprod=to_torch(self.sqrt_recipm1_alphas_cumprod).to(device)
-        self.posterior_variance=to_torch(self.posterior_variance).to(device)
-        self.posterior_log_variance_clipped=to_torch(self.posterior_log_variance_clipped).to(device)
-        self.posterior_mean_coef1=to_torch(self.posterior_mean_coef1).to(device)
 
     
     def register_schedule(self):
@@ -168,7 +153,9 @@ class DDPM(pl.LightningModule):
         # pre-process, to make x_0 be [batch_size, width, height, chanel]
         
         # 
+    
         x0=batch['image'].permute(0,3,1,2)
+        # x0=batch[0]
         # batch : [batch_size,width,height,chanel]
         t= torch.randint(0,self.num_timesteps,(x0.shape[0],),device=self.device)
         noise=torch.randn_like(x0)
@@ -178,6 +165,12 @@ class DDPM(pl.LightningModule):
         # 先用原图x_0,通过不同的t，得到经过t次加噪音noise之后的x_t
         # 然后，model，告诉model，x_t和t，让它推理噪音是什么样子。
         # 因此，model的输出是，噪音
+        
+        # test
+        ts1=self.sqrt_alphas_cumprod[t].view(batch_size,1,1,1)*x0
+        ts=self.sqrt_alphas_cumprod[t].view(batch_size,1,1,1)
+        # /test
+        
         x_t=(# equation:√(a_hat) * x_0 + √(1-a_hat) * N(0,I)
             self.sqrt_alphas_cumprod[t].view(batch_size,1,1,1) * x0+ 
             self.sqrt_one_minus_alphas_cumprod[t].view(batch_size,1,1,1)*noise 
@@ -189,9 +182,11 @@ class DDPM(pl.LightningModule):
         
         # get loss
         loss=torch.nn.functional.mse_loss(target,model_output)
-        print(model_output.max(),model_output.min())
+
         # log
         self.log('loss',loss,prog_bar=True,logger=True,on_epoch=False)
+        # self.log('model_output_max',model_output.max(),prog_bar=True,logger=True,on_epoch=False)
+        # self.log('model_output_min',model_output.min(),prog_bar=True,logger=True,on_epoch=False)
         return loss
     
     
@@ -200,27 +195,35 @@ class DDPM(pl.LightningModule):
         self.model.eval()
         x_t=torch.randn(1,3,64,64,device=device) # random a noisy image x_t # TODO: 1，64，都可以变成参数
         
-        for t in tqdm(reversed(range(1,self.num_timesteps))): # prograsively denoise
+        for t in tqdm(reversed(range(0,self.num_timesteps))): # prograsively denoise
             
             t=torch.tensor(t,device=device).reshape(1)
-            z=torch.randn(3,64,64,device=device)
-
-            if t==1000-24:
-                print(1)
-                pass
-
-
-            noise=self.model(x_t,t)
             
-            if t==1000-24:
-                print(1)
-                pass
+
+            noise=self.model(x_t,t)           
             
-            x_0_predicted=(x_t-self.sqrt_one_minus_alphas_cumprod[t]*noise)/self.sqrt_alphas_cumprod[t]
+            # predict x_start
+            x_0_predicted=self.sqrt_recip_alphas_cumprod[t]*x_t-self.sqrt_recipm1_alphas_cumprod[t]*noise
+            x_0_predicted=torch.clamp(x_0_predicted,max=1.0,min=1.0)
             
-            x_tm1=(self.posterior_mean_coef1 *x_0_predicted+self.posterior_mean_coef2*x_t)+self.posterior_variance*z
+            posterior_mean=self.posterior_mean_coef1[t]*x_0_predicted+self.posterior_mean_coef2[t]*x_t
+            
+            posterior_variance=self.posterior_variance[t] # 暂时用不到
+            
+            posterior_log_variance=self.posterior_log_variance_clipped[t]
+            
+            if t==0:
+                nonzeromask=0
+            else:
+                nonzeromask=1
+                
+                
+            noise=torch.randn(3,64,64,device=device)
+
+            x_tm1=posterior_mean+nonzeromask*(0.5*posterior_log_variance).exp()*noise
             
             x_t=x_tm1
+            
 
         img=x_t # at present, x_t is the x_0_predicted
         

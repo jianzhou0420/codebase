@@ -32,7 +32,7 @@ def get_cifar10(batch_size):
     val_sampler = SubsetRandomSampler(val_indices)
 
     # Define data loaders using samplers
-    train_loader = DataLoader(trainset, batch_size=batch_size, sampler=train_sampler,num_workers=15)
-    val_loader = DataLoader(trainset, batch_size=batch_size, sampler=val_sampler,num_workers=15)
+    train_loader = DataLoader(trainset, batch_size=batch_size, sampler=train_sampler,num_workers=8)
+    val_loader = DataLoader(trainset, batch_size=batch_size, sampler=val_sampler,num_workers=8)
     
     return train_loader,val_loader

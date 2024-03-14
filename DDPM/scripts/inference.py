@@ -1,6 +1,6 @@
 import pytorch_lightning as pl
 
-from core.module.DDPM.myDDPM import DDPM
+from z.myDDPM import DDPM
 # from core.module.DDPM.DDPM import DDPM
 from core.data.CelebaHQ import get_ldmcelebahq
 

@@ -33,3 +33,7 @@ Use as less code, tricky logic and techniques as possible when implementing, for
 
 ---
 md,我要说什么来着？
+
+
+---
+torch.item()

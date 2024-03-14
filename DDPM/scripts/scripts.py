@@ -1,5 +1,5 @@
 import pytorch_lightning as pl
-from core.module.DDPM.myDDPM_2 import GaussianDiffusion
+from core.module.DDPM.myDDPM import GaussianDiffusion
 
 from core.data.cifar10 import get_cifar10
 
@@ -26,7 +26,7 @@ class DDPM_trainer(pl.LightningModule,GaussianDiffusion):
         loss=self.training_losses(x_0,t)
         self.log('loss',loss,prog_bar=True,logger=True,on_epoch=False)
         return loss
-   
+ 
 
 
 def npshow(x_0,save):

@@ -1,0 +1,23 @@
+# There are a a lot of parameters that need to pass
+# I use it to make code cleaner and more readable
+
+
+# 嵌套之间传参，要传整个，不然容易乱，不宜与阅读。
+# 整个传才多少开销，几乎可以忽略不计，而且还方便，读者也看得清楚。
+
+
+
+
+d_model: 512
+n_layers: 6
+n_heads: 8
+d_ff: 2048            # feed forward hidden layer size
+P_dropout: 0.1
+max_seq_len: 5000
+# encoder
+src_vocab_size: 32000
+
+# decoder
+tgt_vocab_size: 32000
+
+

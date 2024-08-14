@@ -26,19 +26,16 @@ class Transformer(nn.Module):
         self.encoder = Encoder(config)
         self.decoder = Decoder(config)
 
-        self.linear = nn.Linear(d_model, target_vocab_size, bias=False)
+        self.d_model2target = nn.Linear(d_model, target_vocab_size, bias=False)
 
-    def forward(self, src_seq, target_seq):
-        # x=self.embedding(src)
-        # x=self.encoder(x,src_mask)
-        # x=self.output_layer(x)
-        src_mask = get_pad_mask(src_seq)
-        target_mask = get_subsequent_mask(target_seq) & get_subsequent_mask(target_mask)
+    def forward(self, src_seq, target_seq, src_mask, target_mask):
 
-        encode_output = self.encoder(src_seq, src_mask)
-        decode_output = self.decoder(target_seq, encode_output, src_mask, target_mask)
+        output_encoder = self.encoder(src_seq, src_mask)
+        output_decoder = self.decoder(target_seq, output_encoder, target_mask, src_mask)
 
-        return x
+        target_seq = self.d_model2target(output_decoder)
+
+        return target_seq
 
 
 #################################################
@@ -91,8 +88,8 @@ class Decoder(nn.Module):
         self.stack_layers = nn.ModuleList([DecoderLayer(config) for _ in range(num_layer)])
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
 
-    def forward(self, x, encode_output, self_mask, decode_mask):
-
+    def forward(self, tar_seq, encode_output, self_attn_mask, decode_attn_mask):
+        x = tar_seq
         # embedding
         x = self.target_word_embedding(x)
         x = self.positional_encoding(x)
@@ -100,9 +97,9 @@ class Decoder(nn.Module):
         # 在github上，比较出名的attention is all you need的实现，这里是有一个layer_norm(PE_output)的，不过原文里没有，我也就没有加了。
 
         for layer in self.num_layer:
-            x = layer(x, encode_output, self_mask, decode_mask)
+            x = layer(x, encode_output, self_attn_mask, decode_attn_mask)
 
-        return
+        return x
 
 
 #################################################
@@ -151,12 +148,12 @@ class DecoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
         self.norm3 = nn.LayerNorm(d_model)
 
-    def forward(self, decode_input, encode_output, self_mask, decode_mask):
+    def forward(self, decode_input, encode_output, self_attn_mask, decode_attn_mask):
 
-        self_attention_output = self.self_attention(decode_input, decode_input, decode_input, self_mask)
+        self_attention_output = self.self_attention(decode_input, decode_input, decode_input, self_attn_mask)
         add_and_norm1 = self.norm1(decode_input + self_attention_output)
 
-        decode_attention_output = self.cross_attention(add_and_norm1, encode_output, encode_output, decode_mask)
+        decode_attention_output = self.cross_attention(add_and_norm1, encode_output, encode_output, decode_attn_mask)
         add_and_norm2 = self.norm2(add_and_norm1 + decode_attention_output)
 
         decode_output = self.positionwise_feedforward(add_and_norm2)

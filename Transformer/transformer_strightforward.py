@@ -281,14 +281,6 @@ class PositionalEncoding(nn.Module):
 # 不对，就算你是self-attention
 
 
-def get_pad_mask():
-    pass
-
-
-def get_subsequent_mask():
-    pass
-
-
 if __name__ == '__main__':
     with open('transformer_args.yaml', 'r') as file:
         config = yaml.safe_load(file)
